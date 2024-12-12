@@ -13,7 +13,7 @@ threads = []
 
 class Peer:
     def __init__(self):
-        self.tracker_host = "172.30.80.1"
+        self.tracker_host = "0.0.0.0"
         self.tracker_port = 8000
         self.server_port = 8002
         self.files = {}  # {(hash_code, file_name, size): [(index_piece, data), ...], ...}

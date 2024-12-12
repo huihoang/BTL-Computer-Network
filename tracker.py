@@ -10,10 +10,10 @@ PING_TIMEOUT = 3
 PIECE_SIZE = 512000 # bytes
 
 class TrackerServer:
-    def __init__(self):
-        # nhận mọi IP client với port 8000
+    def __init__(self, bind_port):
+        # nhận mọi IP client với port được nhập từ người dùng
         self.bind_ip  = "0.0.0.0"
-        self.bind_port = 8000
+        self.bind_port = bind_port
 
         # kiểu dl là dictionary 
         self.peers = {}  # {(peer_address, port): [(hash_code, file_name, size), ...], ...}
@@ -142,6 +142,87 @@ class TrackerServer:
             data_bytes = json.dumps(list(self.files.keys())) #chuyển về list vì ko chuyển trực tiếp từ dict sang json
             data_bytes = data_bytes.encode().ljust(PIECE_SIZE, b"\x00")
             conn.sendall(data_bytes)
+        if command[0] == "missing":
+            hash_code = command[1]
+            index_piece = int(command[2])
+            peer_addr = (command[3], int(command[4]))
+
+            with self.lock:
+                for key in list(self.files.keys()):
+                    if str(key[0]) == hash_code:
+                        if peer_addr in self.files[key].get(index_piece, []):
+                            self.files[key][index_piece].remove(peer_addr)
+                        break
+
+            # Send updated list to the peer
+            dataFetch = {}
+            for key in self.files.keys():
+                if str(key[0]) == hash_code:
+                    dataFetch.setdefault(key, {})
+                    for index_piece, addr_clients in self.files[key].items():
+                        if addr_clients:
+                            dataFetch[key].setdefault(index_piece, random.choice(addr_clients))
+                        else:
+                            dataFetch[key].setdefault(index_piece, [])
+
+            data_json_ready = {str(key): value for key, value in dataFetch.items()}
+            data_bytes = json.dumps(data_json_ready).encode()
+            data_bytes = data_bytes.ljust(PIECE_SIZE, b"\x00")
+            conn.sendall(data_bytes)
+
+            # Check if the file is still safe to fetch
+            total_pieces = (key[2] + PIECE_SIZE - 1) // PIECE_SIZE
+            total_pieces_available = sum(1 for peers in self.files[key].values() if peers)
+            if total_pieces_available < total_pieces:
+                conn.sendall("File is missing pieces and not safe to fetch".encode().ljust(128, b"\x00"))
+            else:
+                conn.sendall("File is safe to fetch".encode().ljust(128, b"\x00"))
+
+        elif command[0] == "delete":
+            # If no file specified after delete command
+            if len(command) < 2:
+                response = "error: No file specified".encode().ljust(128, b"\x00")
+                return response
+
+            # Search by hash_code or file_name
+            delete_target = command[1]
+            deleted = False
+            file_to_delete = None
+
+            with self.lock:
+                # First, try to find by hash_code
+                for key in list(self.files.keys()):
+                    if str(key[0]) == delete_target:
+                        file_to_delete = key
+                        break
+                
+                # If not found by hash_code, try file_name
+                if not file_to_delete:
+                    for key in list(self.files.keys()):
+                        if str(key[1]) == delete_target:
+                            file_to_delete = key
+                            break
+                
+                # If file found, remove from files and peers
+                if file_to_delete:
+                    # Remove from files
+                    if file_to_delete in self.files:
+                        del self.files[file_to_delete]
+                    
+                    # Remove from peers
+                    for peer_addr in list(self.peers.keys()):
+                        if file_to_delete in self.peers[peer_addr]:
+                            self.peers[peer_addr].remove(file_to_delete)
+                    
+                    deleted = True
+
+                # Prepare response
+            if deleted:
+                self.print_peers_and_files()  # Optional: update the display
+            else:
+                print("Error during deleting the files")
+            self.print_peers_and_files()
+
         else:
             command[0] = command[0] + " (not found) "
         return ("Finish ".encode() + command[0].encode() + " command!".encode()).ljust(128, b"\x00")
@@ -230,5 +311,7 @@ class TrackerServer:
                     print(f"Error accepting connection: {e}")
 
 if __name__ == "__main__":
-    tracker = TrackerServer()
+    # Prompt the user to input the port number
+    port = int(input("Enter the port number for the tracker server: "))
+    tracker = TrackerServer(bind_port=port)
     tracker.start()
