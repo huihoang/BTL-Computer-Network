@@ -6,16 +6,16 @@ import hashlib
 import os
 import sys
 
-PIECE_SIZE = 512000 #kB
+PIECE_SIZE = 512000 # Bytes
 
 # Danh sách lưu các thread
 threads = []
 
 class Peer:
-    def __init__(self):
+    def __init__(self, tracker_port, server_port):
         self.tracker_host = "172.30.80.1"
-        self.tracker_port = 8000
-        self.server_port = 8003
+        self.tracker_port = tracker_port
+        self.server_port = server_port
         self.files = {}  # {(hash_code, file_name, size): [(index_piece, data), ...], ...}
         self.lock_var_files = threading.Lock()
         self.lock_repository = threading.Lock()
@@ -24,32 +24,32 @@ class Peer:
     def server(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(("0.0.0.0", self.server_port))
-            s.listen(4) #giới hạn 4 client
+            s.listen(4)  # giới hạn 4 client
             # print(f"Client server running on {self.host}:{self.port}")
 
             #! multi-upload    
             while True:
                 conn, addr = s.accept()
                 threading.Thread(target=self.handle_client, args=(conn, addr), daemon=False).start()
- 
+
     def client(self):
         self.connect_to_tracker()
-        
+
         while True:
             command_input = input("Client 3>>").strip()
             command = command_input.split(" ")
             if command[0] == "post":
                 self.tracker_sock.sendall(command[0].encode())
 
-                #gửi file json
+                # gửi file json
                 for path_file in command[1:]:
                     # kiểm tra có sẵn file không 
                     if not os.path.exists(path_file):
                         print(f"File {path_file} does not exist")
                         continue
                     self.post_file(path_file)
-                #lệnh dừng
-                while True:            
+                # lệnh dừng
+                while True:
                     try:
                         stop_signal = {}
                         self.tracker_sock.sendall(json.dumps(stop_signal).encode().ljust(PIECE_SIZE, b"\x00"))
@@ -85,7 +85,7 @@ class Peer:
                     for file_info, pieces in response.items():
                         # chuyển đổi key từ string sang int
                         pieces = {int(key): value for key, value in pieces.items()}
-                        
+
                         hash_code, file_name, size = file_info
                         self.files.setdefault(file_info, [])
 
@@ -105,7 +105,7 @@ class Peer:
                                 with open(full_path_json, "r", encoding="utf-8") as file:
                                     file_json = json.load(file)
 
-                                    # piece nào có rồi thì load du lieu vao files
+                                    # piece nào có rồi thì load dữ liệu vào files
                                     self.loadData(file_info, file_json["pieces"], full_path_real_file)
                             except json.JSONDecodeError as e:
                                 print(f"Error decoding JSON in file {full_path_json}: {e}")
@@ -120,15 +120,15 @@ class Peer:
                                     thread = threading.Thread(target=self.fetch_piece, args=(file_info, index_piece, tuple(addr)), daemon=False)
                                     thread.start()
                                     threads.append(thread)  # Lưu thread vào danh sách
-                        
+
                         # Chờ tất cả các thread hoàn thành
                         for th in threads:
                             th.join()  # Đợi thread này kết thúc
-                            
+
                         with self.lock_var_files:
                             # sort lại pieces
                             self.files[file_info] = self.sort_data(self.files[file_info])
-                        
+
                         with self.lock_repository:
                             # ghi file chính
                             with open(full_path_real_file, "wb") as file:
@@ -144,7 +144,7 @@ class Peer:
                                         file_json["pieces"].append(index_piece)
                                     file.write(json.dumps(file_json, indent=4, ensure_ascii=False))
 
-                                    #in ra thông báo file đầy đủ pieces có thể mở file
+                                    # in ra thông báo file đầy đủ pieces có thể mở file
                                     total_pieces = (size + PIECE_SIZE - 1) // PIECE_SIZE
                                     total_pieces_available = len(file_json["pieces"])
                                     if total_pieces == total_pieces_available:
@@ -157,20 +157,64 @@ class Peer:
                                 print(f"Error reading file in update/create command {full_path_json}: {e}")
             elif command[0] == "discover":
                 self.tracker_sock.sendall(command[0].encode())
+                json_content = None
                 try:
                     json_content = json.loads(self.tracker_sock.recv(PIECE_SIZE).rstrip(b"\x00").decode())
                 except json.JSONDecodeError as e:
                     print(f"Lỗi giải mã JSON in discover: {e}")
 
-                if json_content == []:  # Nếu dữ liệu rỗng 
+                if not json_content:  # Nếu dữ liệu rỗng 
                     print("Không có file nào được chia sẻ")
                 else:
                     print(json.dumps(json_content, indent=4, ensure_ascii=False))  # indent để format đẹp
                 print(self.tracker_sock.recv(128).rstrip(b"\x00").decode())
             elif command[0] == "end":
                 self.tracker_sock.close()
-                sys.exit() # safely exit the program
+                sys.exit()  # safely exit the program
                 break
+            elif command[0] == "delete":
+                if len(command) < 2:
+                    print("Please specify a file name or hash code to delete")
+                    continue
+
+                # Confirm deletion
+                confirm = input(f"Are you sure you want to delete {command[1]}? (Y/n): ").strip().lower()
+
+                if confirm == 'y':
+                    # Send delete command to tracker
+                    self.tracker_sock.sendall(command_input.encode())
+
+                    # Receive response from tracker
+                    response = str(self.tracker_sock.recv(128).rstrip(b"\x00").decode())
+
+                    if "Finish" in response:
+                        # If deletion is confirmed by tracker
+                        try:
+                            # Try to find the file locally
+                            file_to_delete = command[1]
+
+                            # First, check if it's a hash code
+                            files_found = [key for key in self.files.keys() if str(key[0]) == file_to_delete]
+                            if files_found:
+                                file_to_delete = files_found[0][1]  # Get the filename
+
+                            # Full paths
+                            full_path_real_file = os.path.join(r".\repository", file_to_delete)
+
+                            full_path_json = os.path.splitext(full_path_real_file)[0] + ".json"
+                            print(full_path_real_file, full_path_json)
+                            # Remove files
+                            if os.path.exists(full_path_real_file):
+                                os.remove(full_path_real_file)
+                            if os.path.exists(full_path_json):
+                                os.remove(full_path_json)
+
+                            print(f"File {file_to_delete} deleted successfully")
+                        except Exception as e:
+                            print(f"Error deleting file: {e}")
+                    else:
+                        print(response)
+
             else:
                 print("Unknown command")
 
@@ -188,46 +232,53 @@ class Peer:
         return dict(sorted(data, key=lambda x: x[0]))
 
     def fetch_piece(self, file_info, index_piece, addr):
-        print(f"Begin fetching piece {index_piece} from {addr} by thead {threading.current_thread().name}")
+        print(f"\n Begin fetching piece {index_piece} from {addr} by thread {threading.current_thread().name}")
 
         # Tạo socket mới để kết nối với peer khác
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect(addr)
-            s.sendall(f"{file_info[1]} {index_piece}".encode().ljust(128, b"\x00")) #gửi file_name và index_piece
+            s.sendall(f"{file_info[1]} {index_piece}".encode().ljust(128, b"\x00"))  # gửi file_name và index_piece
             # Nhận dữ liệu từ peer khác
 
             response = s.recv(PIECE_SIZE).rstrip(b"\x00")
+            if response == b"MISSING_PIECE":
+                print(f"Peer {addr} does not have piece {index_piece}")
+                # Inform tracker about missing piece
+                self.tracker_sock.sendall(f"missing {file_info[0]} {index_piece} {addr[0]} {addr[1]}".encode())
+                return
+
             data = (index_piece, response)
-            with self.lock_var_files:    
+            with self.lock_var_files:
                 # Lưu dữ liệu vào files
                 self.files[file_info].extend([data])
             s.close()
-        print(f"Finish fetching piece {index_piece} from {addr} by thead {threading.current_thread().name}")
-            
+        print(f"Finish fetching piece {index_piece} from {addr} by thread {threading.current_thread().name}")
+
     def handle_client(self, conn, addr):
         with conn:
-            print(f"\n Has been connected with {addr}")
+            # print(f"\n Has been connected with {addr}")
             while True:
                 data = conn.recv(128).rstrip(b"\x00")
                 if not data:
                     break
-                command = data.decode().split(" ") # file_name index_piece 
+                command = data.decode().split(" ")  # file_name index_piece 
                 print(f"Begin sending piece {command[1]} to {addr} by thread {threading.current_thread().name}")
-                
+
                 full_path_real_file = os.path.join(r".\repository", command[0])
                 full_path_json = os.path.splitext(full_path_real_file)[0] + ".json"
-                # kieu tra file co ton tai ko
+                # kiểm tra file có tồn tại không
                 if not (os.path.exists(full_path_real_file) or os.path.exists(full_path_json)):
+                    conn.sendall(b"MISSING_PIECE")
                     continue
 
-                with self.lock_repository:    
-                    #đọc file json lấy index của piece
+                with self.lock_repository:
+                    # đọc file json lấy index của piece
                     with open(full_path_json, "r", encoding="utf-8") as file:
                         file_json = json.load(file)
                         index_piece = file_json["pieces"].index(int(command[1]))
-                    
-                with self.lock_repository:    
-                    #gửi dữ liệu cho peer đang yêu cầu
+
+                with self.lock_repository:
+                    # gửi dữ liệu cho peer đang yêu cầu
                     with open(full_path_real_file, "rb") as file:
                         file.seek(index_piece * PIECE_SIZE)
                         data = file.read(PIECE_SIZE)
@@ -239,6 +290,7 @@ class Peer:
             try:
                 self.tracker_sock = socket.create_connection((self.tracker_host, self.tracker_port), timeout=10)
                 print(f"Connected to tracker on {self.tracker_host}:{self.tracker_port}")
+                # gửi addr này để peer khác kết nối tới server của client
                 self.tracker_sock.sendall(f"{self.server_port}".encode())
                 break
             except socket.timeout:
@@ -256,7 +308,7 @@ class Peer:
         return hash_object.hexdigest()
 
     def post_file(self, path_file):
-        #chuyen file sang json
+        # chuyển file sang json
         path_file_json = os.path.splitext(path_file)[0] + ".json"
         if not os.path.exists(path_file_json):
             # Tạo file JSON, coi như là file mới (full piece)
@@ -264,15 +316,15 @@ class Peer:
                 with open(path_file_json, "w") as file:
                     size = os.path.getsize(path_file)
                     file_indices = [x for x in range(1, ((size + PIECE_SIZE - 1) // PIECE_SIZE) + 1)]
-                    file.write(json.dumps({"hash_code": self.generate_time_hash(), "file_name": os.path.basename(path_file), "size": size, "pieces": file_indices}, indent=4))    
+                    file.write(json.dumps({"hash_code": self.generate_time_hash(), "file_name": os.path.basename(path_file), "size": size, "pieces": file_indices}, indent=4))
             except Exception as e:
                 print(f"Error reading file in post command {path_file}: {e}")
-        #file đã tồn tại
+        # file đã tồn tại
         try:
             # Đọc file JSON
             with open(os.path.join(path_file_json), "r") as file:
                 json_data = json.load(file)
-                # kiem tra file json
+                # kiểm tra file json
                 if "file_name" not in json_data or json_data["file_name"] == "":
                     json_data["file_name"] = path_file
                 if "hash_code" not in json_data or json_data["hash_code"] == "":
@@ -297,5 +349,8 @@ class Peer:
         self.client()
 
 if __name__ == "__main__":
-    peer = Peer()
+    # Prompt the user to input the tracker port and server port
+    tracker_port = int(input("Enter the tracker port: "))
+    server_port = int(input("Enter the server port for this peer: "))
+    peer = Peer(tracker_port=tracker_port, server_port=server_port)
     peer.start()

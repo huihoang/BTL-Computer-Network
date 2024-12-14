@@ -6,14 +6,14 @@ import hashlib
 import os
 import sys
 
-PIECE_SIZE = 512000  # kB
+PIECE_SIZE = 512000 # Bytes
 
 # Danh sách lưu các thread
 threads = []
 
 class Peer:
     def __init__(self, tracker_port, server_port):
-        self.tracker_host = "0.0.0.0"
+        self.tracker_host = "172.30.80.1"
         self.tracker_port = tracker_port
         self.server_port = server_port
         self.files = {}  # {(hash_code, file_name, size): [(index_piece, data), ...], ...}
@@ -232,7 +232,7 @@ class Peer:
         return dict(sorted(data, key=lambda x: x[0]))
 
     def fetch_piece(self, file_info, index_piece, addr):
-        print(f"Begin fetching piece {index_piece} from {addr} by thread {threading.current_thread().name}")
+        print(f"\n Begin fetching piece {index_piece} from {addr} by thread {threading.current_thread().name}")
 
         # Tạo socket mới để kết nối với peer khác
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -290,6 +290,7 @@ class Peer:
             try:
                 self.tracker_sock = socket.create_connection((self.tracker_host, self.tracker_port), timeout=10)
                 print(f"Connected to tracker on {self.tracker_host}:{self.tracker_port}")
+                # gửi addr này để peer khác kết nối tới server của client
                 self.tracker_sock.sendall(f"{self.server_port}".encode())
                 break
             except socket.timeout:

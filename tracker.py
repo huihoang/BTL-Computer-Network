@@ -142,7 +142,7 @@ class TrackerServer:
             data_bytes = json.dumps(list(self.files.keys())) #chuyển về list vì ko chuyển trực tiếp từ dict sang json
             data_bytes = data_bytes.encode().ljust(PIECE_SIZE, b"\x00")
             conn.sendall(data_bytes)
-        if command[0] == "missing":
+        elif command[0] == "missing":
             hash_code = command[1]
             index_piece = int(command[2])
             peer_addr = (command[3], int(command[4]))
@@ -177,7 +177,6 @@ class TrackerServer:
                 conn.sendall("File is missing pieces and not safe to fetch".encode().ljust(128, b"\x00"))
             else:
                 conn.sendall("File is safe to fetch".encode().ljust(128, b"\x00"))
-
         elif command[0] == "delete":
             # If no file specified after delete command
             if len(command) < 2:
@@ -207,22 +206,21 @@ class TrackerServer:
                 if file_to_delete:
                     # Remove from files
                     if file_to_delete in self.files:
-                        del self.files[file_to_delete]
-                    
+                        to_delete = []
+                        for key, value in self.files.items():
+                            total = (key[2] + PIECE_SIZE - 1) // PIECE_SIZE
+                            count = 0
+                            for _, peers in value.items():
+                                if addr in peers:
+                                    peers.remove(addr)
+                                if not peers:
+                                    count += 1
+                            if count == total:
+                                to_delete.append(key)
+                        for key in to_delete:
+                            del self.files[key] 
                     # Remove from peers
-                    for peer_addr in list(self.peers.keys()):
-                        if file_to_delete in self.peers[peer_addr]:
-                            self.peers[peer_addr].remove(file_to_delete)
-                    
-                    deleted = True
-
-                # Prepare response
-            if deleted:
-                self.print_peers_and_files()  # Optional: update the display
-            else:
-                print("Error during deleting the files")
-            self.print_peers_and_files()
-
+                    self.peers[addr].remove(file_to_delete)
         else:
             command[0] = command[0] + " (not found) "
         return ("Finish ".encode() + command[0].encode() + " command!".encode()).ljust(128, b"\x00")
@@ -232,11 +230,11 @@ class TrackerServer:
         for (peer_address, port), files in self.peers.items():
             print(f"- Peer: {peer_address}:{port}")
             for hash_code, file_name, size in files:
-                print(f"  + File: {file_name} | Hash: {hash_code} | Size: {size} MB")
+                print(f"  + File: {file_name} | Hash: {hash_code} | Size: {size} B")
 
         print("\n-------------------- Danh sách các pieces sẵn sàng chia sẻ --------------------")
         for (hash_code, file_name, size), pieces in self.files.items():
-            print(f"- File: {file_name} | Hash: {hash_code} | Size: {size} MB")
+            print(f"- File: {file_name} | Hash: {hash_code} | Size: {size} B")
             for index_piece, peer_list in pieces.items():
                 print(f"  + Piece {index_piece}:")
                 for peer_address, port in peer_list:
